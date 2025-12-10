@@ -1,43 +1,46 @@
-use pdf::content::Op;
-use pdf::file::FileOptions;
+use pdfium_render::prelude::*;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let pdf_path = "ponto.pdf";
-    let file = FileOptions::cached().open(pdf_path)?;
-
-    println!("📄 Extraindo texto de {} páginas...\n", file.num_pages());
-
-    let mut extracted = String::new();
-
-    for page_num in 0..file.num_pages() {
-        let page = file.get_page(page_num)?;
-
-        if let Some(content) = page.contents.as_ref() {
-            let ops = content.operations(&file.resolver())?;
-
-            for op in ops {
-                match op {
-                    Op::TextDraw { text } => {
-                        extracted.push_str(&text.to_string()?);
-                        extracted.push(' ');
-                    }
-                    Op::TextDrawAdjusted { array } => {
-                        for item in array {
-                            if let pdf::content::TextDrawAdjusted::Text(t) = item {
-                                extracted.push_str(&t.to_string()?);
-                            }
-                        }
-                        extracted.push(' ');
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        extracted.push_str(&format!("\n--- Fim da página {} ---\n", page_num + 1));
-    }
-
-    println!("Texto extraído:\n{}", extracted.trim());
-    Ok(())
+#[derive(serde::Serialize)]
+pub struct JSONResponse {
+    person: String,
+    date: String,
+    hour: String,
 }
 
+fn extract_value(text: &str, key: &str) -> Option<String> {
+    text.split_once(key).map(|(_, rest)| {
+        rest.lines()
+            .skip_while(|l| l.trim().is_empty())
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    })
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let pdfium = Pdfium::new(Pdfium::bind_to_library("./lib/libpdfium.so")?);
+
+    let document = pdfium.load_pdf_from_file("ponto.pdf", None)?;
+    let mut out = String::new();
+
+    document.pages().iter().for_each(|page| {
+        let text = page.text().expect("REASON").all();
+        out.push_str(&text);
+        out.push_str("\n--- Fim da página ---\n");
+    });
+
+    let person = extract_value(&out, "PESSOA:").unwrap_or_default();
+    let mark = extract_value(&out, "MARCAÇÃO:").unwrap_or_default();
+
+    let parts: Vec<&str> = mark.split_whitespace().collect();
+
+    let date = parts.get(0).unwrap_or(&"").to_string();
+    let hour = parts.get(1).unwrap_or(&"").to_string();
+
+    let response = JSONResponse { person, date, hour };
+
+    println!("{}", serde_json::to_string_pretty(&response)?);
+
+    Ok(())
+}
